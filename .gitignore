@@ -1,0 +1,26 @@
+digital_ajo_project_tracker.html
+documentation.md
+ajo.md
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Django generated files
+staticfiles/
+media/
+
+# Local databases
+*.sqlite3
+
+# Editor and operating system files
+.DS_Store
+Thumbs.db
