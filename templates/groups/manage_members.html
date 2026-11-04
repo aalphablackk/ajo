@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Members | Digital Ajo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+
+<div class="container py-5">
+
+    <div class="mb-4">
+        <a href="{% url 'groups:my_groups' %}" class="text-decoration-none">
+            &larr; Back to My Groups
+        </a>
+
+        <h2 class="mt-3">{{ group.name }}</h2>
+        <p class="text-muted">Manage membership requests and group members.</p>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags|default:'info' }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <div class="row g-3 mb-4">
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body">
+                    <p class="text-muted mb-1">Approved Members</p>
+                    <h3>{{ approved_count }} / {{ group.max_members }}</h3>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body">
+                    <p class="text-muted mb-1">Pending Requests</p>
+                    <h3>{{ pending_members|length }}</h3>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body">
+                    <p class="text-muted mb-1">Available Slots</p>
+                    <h3>{{ available_slots }}</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pending Requests -->
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+
+            <h5 class="mb-3">Pending Requests</h5>
+
+            {% for membership in pending_members %}
+                <div class="border rounded p-3 mb-3">
+
+                    <h6>{{ membership.user.full_name }}</h6>
+
+                    <p class="mb-1">
+                        <strong>Email:</strong>
+                        {{ membership.user.email }}
+                    </p>
+
+                    <p class="mb-1">
+                        <strong>Phone:</strong>
+                        {% if membership.user.phone_number %}
+                            {{ membership.user.phone_number }}
+                        {% else %}
+                            <span class="text-muted">Not provided</span>
+                        {% endif %}
+                    </p>
+
+                    <p class="text-muted small mb-3">
+                        Requested: {{ membership.joined_at|date:"M d, Y - h:i A" }}
+                    </p>
+
+                    <div class="d-flex gap-2">
+
+                        <form method="POST"
+                              action="{% url 'groups:approve_member' group.id membership.id %}">
+                            {% csrf_token %}
+                            <button type="submit"
+                                    class="btn btn-success btn-sm"
+                                    {% if available_slots == 0 %}disabled{% endif %}>
+                                Approve
+                            </button>
+                        </form>
+
+                        <form method="POST"
+                              action="{% url 'groups:reject_member' group.id membership.id %}"
+                              onsubmit="return confirm('Are you sure you want to reject this request?');">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-outline-danger btn-sm">
+                                Reject
+                            </button>
+                        </form>
+
+                    </div>
+                </div>
+
+            {% empty %}
+                <p class="text-muted mb-0">There are no pending membership requests.</p>
+            {% endfor %}
+
+        </div>
+    </div>
+
+    <!-- Approved Members -->
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+
+            <h5 class="mb-3">Approved Members</h5>
+
+            {% for membership in approved_members %}
+                <div class="border-bottom py-3">
+                    <div class="d-flex justify-content-between flex-wrap gap-2">
+                        <div>
+                            <strong>{{ membership.user.full_name }}</strong>
+
+                            {% if membership.role == "owner" %}
+                                <span class="badge bg-dark">Owner</span>
+                            {% endif %}
+
+                            <p class="mb-1 small">{{ membership.user.email }}</p>
+
+                            <p class="mb-0 small text-muted">
+                                Phone:
+                                {{ membership.user.phone_number|default:"Not provided" }}
+                            </p>
+                        </div>
+
+                        <span class="badge bg-success align-self-start">
+                            Approved
+                        </span>
+                        {% if membership.role == "member" and group.status != "active" and group.status != "completed" and group.status != "cancelled" %}
+
+    <form method="POST"
+          action="{% url 'groups:remove_member' group.id membership.id %}"
+          onsubmit="return confirm('Are you sure you want to remove this member?');">
+
+        {% csrf_token %}
+
+        <input
+            type="text"
+            name="removal_reason"
+            class="form-control form-control-sm mb-2"
+            maxlength="255"
+            placeholder="Reason for removal (optional)"
+        >
+
+        <button type="submit" class="btn btn-outline-danger btn-sm">
+            Remove Member
+        </button>
+
+    </form>
+
+{% endif %}
+                    </div>
+                </div>
+            {% empty %}
+                <p class="text-muted">No approved members yet.</p>
+            {% endfor %}
+
+        </div>
+    </div>
+
+    <!-- Rejected Requests -->
+    <div class="card border-0 shadow-sm">
+        <div class="card-body">
+
+            <h5 class="mb-3">Rejected Requests</h5>
+
+            {% for membership in rejected_members %}
+                <div class="border-bottom py-3">
+                    <strong>{{ membership.user.full_name }}</strong>
+
+                    <p class="mb-1 small">{{ membership.user.email }}</p>
+
+                    <p class="mb-1 small text-muted">
+                        Phone:
+                        {{ membership.user.phone_number|default:"Not provided" }}
+                    </p>
+
+                    <span class="badge bg-danger">Rejected</span>
+                </div>
+            {% empty %}
+                <p class="text-muted">No rejected requests.</p>
+            {% endfor %}
+
+        </div>
+    </div>
+    <div class="card border-0 shadow-sm mt-4">
+    <div class="card-body">
+
+        <h5 class="mb-3">Removed Members</h5>
+
+        {% for membership in removed_members %}
+
+            <div class="border-bottom py-3">
+
+                <strong>{{ membership.user.full_name }}</strong>
+
+                <p class="mb-1 small">
+                    {{ membership.user.email }}
+                </p>
+
+                <p class="mb-1 small text-muted">
+                    Phone: {{ membership.user.phone_number|default:"Not provided" }}
+                </p>
+
+                <p class="mb-1 small text-muted">
+                    Removed by:
+                    {{ membership.removed_by.full_name|default:"Unknown" }}
+                </p>
+
+                <p class="mb-1 small text-muted">
+                    Date: {{ membership.removed_at|date:"M d, Y - h:i A" }}
+                </p>
+
+                {% if membership.removal_reason %}
+                    <p class="mb-0 small">
+                        Reason: {{ membership.removal_reason }}
+                    </p>
+                {% endif %}
+
+                <span class="badge bg-danger mt-2">Removed</span>
+                {% if group.status == "draft" or group.status == "open" or group.status == "closed" or group.status == "ready" %}
+
+    <form method="POST"
+          action="{% url 'groups:readd_member' group.id membership.id %}"
+          onsubmit="return confirm('Re-add this member to the group?');">
+
+        {% csrf_token %}
+
+        <button type="submit" class="btn btn-outline-success btn-sm mt-2">
+            Re-add Member
+        </button>
+
+    </form>
+
+{% endif %}
+
+            </div>
+
+        {% empty %}
+
+            <p class="text-muted mb-0">No members have been removed.</p>
+
+        {% endfor %}
+
+    </div>
+</div>
+<div class="card border-0 shadow-sm mt-4">
+    <div class="card-body">
+
+        <h5 class="mb-3">Membership Activity History</h5>
+
+        {% for event in membership_history %}
+            <div class="border-bottom py-3">
+
+                <strong>{{ event.membership.user.full_name }}</strong>
+
+                {% if event.event_type == "removed" %}
+                    <span class="badge bg-danger">Removed</span>
+                {% else %}
+                    <span class="badge bg-success">Rejoined</span>
+                {% endif %}
+
+                <p class="small text-muted mb-1">
+                    By: {{ event.performed_by.full_name|default:"Unknown" }}
+                </p>
+
+                <p class="small text-muted mb-1">
+                    {{ event.created_at|date:"M d, Y - h:i A" }}
+                </p>
+
+                {% if event.reason %}
+                    <p class="small mb-0">Reason: {{ event.reason }}</p>
+                {% endif %}
+
+            </div>
+        {% empty %}
+            <p class="text-muted mb-0">No membership activity recorded yet.</p>
+        {% endfor %}
+
+    </div>
+</div>
+</div>
+
+</body>
+</html>
