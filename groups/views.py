@@ -6,8 +6,9 @@ from django.utils import timezone
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 from .forms import AjoGroupForm
-from .models import AjoGroup, GroupMembership, GroupMembershipHistory
+from .models import AjoGroup, GroupMembership, GroupMembershipHistory,AjoCycle,CycleParticipant
 from django.db.models import Count, Q
+
 
 
 @login_required
@@ -18,11 +19,14 @@ def create_group(request):
 
         if form.is_valid():
             with transaction.atomic():
+
+                # Create the group.
                 group = form.save(commit=False)
                 group.owner = request.user
                 group.save()
 
-                GroupMembership.objects.create(
+                # Add the owner as an approved group member.
+                owner_membership = GroupMembership.objects.create(
                     group=group,
                     user=request.user,
                     role=GroupMembership.Role.OWNER,
@@ -31,9 +35,28 @@ def create_group(request):
                     reviewed_at=timezone.now(),
                 )
 
+                # Automatically create the first Ajo cycle.
+                cycle = AjoCycle.objects.create(
+                    group=group,
+                    cycle_number=1,
+                    onboarding_type=AjoCycle.OnboardingType.NEW,
+                    contribution_amount=group.contribution_amount,
+                    frequency=group.frequency,
+                    payout_method=group.payout_method,
+                    start_date=group.start_date,
+                    status=AjoCycle.Status.DRAFT,
+                )
+
+                # Add the owner as the first cycle participant.
+                CycleParticipant.objects.create(
+                    cycle=cycle,
+                    membership=owner_membership,
+                    status=CycleParticipant.Status.ACTIVE,
+                )
+
             messages.success(
                 request,
-                "Your Ajo group has been created successfully."
+                "Your Ajo group and first cycle have been created successfully."
             )
 
             return redirect("groups:my_groups")
@@ -506,6 +529,27 @@ def approve_member(request, group_id, membership_id):
                 "reviewed_at"
             ])
 
+            # Add the approved member to the initial cycle
+            # if the cycle has not started yet.
+            cycle = AjoCycle.objects.filter(
+                group=group,
+                cycle_number=1,
+                status__in=[
+                    AjoCycle.Status.DRAFT,
+                    AjoCycle.Status.SETUP,
+                    AjoCycle.Status.READY,
+                ],
+            ).first()
+
+            if cycle:
+                CycleParticipant.objects.get_or_create(
+                    cycle=cycle,
+                    membership=membership,
+                    defaults={
+                        "status": CycleParticipant.Status.ACTIVE,
+                    },
+                )
+
             messages.success(
                 request,
                 f"{membership.user.full_name} has been approved."
@@ -550,11 +594,12 @@ def reject_member(request, group_id, membership_id):
         )
 
     return redirect("groups:manage_members", group_id=group.id)
-
 @login_required
 @require_POST
 def remove_member(request, group_id, membership_id):
+
     with transaction.atomic():
+
         group = get_object_or_404(
             AjoGroup.objects.select_for_update(),
             id=group_id,
@@ -568,10 +613,18 @@ def remove_member(request, group_id, membership_id):
             AjoGroup.Status.READY,
         ]
 
-        if group.status not in allowed_statuses:
+        started_cycle_exists = group.cycles.filter(
+            status__in=[
+                AjoCycle.Status.ACTIVE,
+                AjoCycle.Status.PAUSED,
+                AjoCycle.Status.COMPLETED,
+            ]
+        ).exists()
+
+        if group.status not in allowed_statuses or started_cycle_exists:
             messages.error(
                 request,
-                "Members cannot be removed after the Ajo cycle has started."
+                "Members cannot be removed after an Ajo cycle has started."
             )
             return redirect("groups:manage_members", group_id=group.id)
 
@@ -586,6 +639,7 @@ def remove_member(request, group_id, membership_id):
         reason = request.POST.get("removal_reason", "").strip()[:255]
         member_name = membership.user.full_name
 
+        # Update group membership.
         membership.status = GroupMembership.Status.REMOVED
         membership.removed_by = request.user
         membership.removed_at = timezone.now()
@@ -598,6 +652,41 @@ def remove_member(request, group_id, membership_id):
             "removal_reason",
         ])
 
+        # Find the member's participation in unstarted cycles.
+        participants = CycleParticipant.objects.filter(
+            membership=membership,
+            cycle__group=group,
+            cycle__status__in=[
+                AjoCycle.Status.DRAFT,
+                AjoCycle.Status.SETUP,
+                AjoCycle.Status.READY,
+            ],
+            status__in=[
+                CycleParticipant.Status.ACTIVE,
+                CycleParticipant.Status.PENDING,
+            ],
+        )
+
+        affected_cycle_ids = list(
+            participants.values_list("cycle_id", flat=True)
+        )
+
+        # Withdraw participation and release payout positions.
+        participants.update(
+            status=CycleParticipant.Status.WITHDRAWN,
+            payout_position=None,
+        )
+
+        # A changed participant list invalidates a READY rotation.
+        group.cycles.filter(
+            id__in=affected_cycle_ids,
+            status=AjoCycle.Status.READY,
+        ).update(
+            status=AjoCycle.Status.SETUP,
+            updated_at=timezone.now(),
+        )
+
+        # Preserve removal history.
         GroupMembershipHistory.objects.create(
             membership=membership,
             event_type=GroupMembershipHistory.EventType.REMOVED,
@@ -631,10 +720,18 @@ def readd_member(request, group_id, membership_id):
             AjoGroup.Status.READY,
         ]
 
-        if group.status not in allowed_statuses:
+        started_cycle_exists = group.cycles.filter(
+            status__in=[
+                AjoCycle.Status.ACTIVE,
+                AjoCycle.Status.PAUSED,
+                AjoCycle.Status.COMPLETED,
+            ]
+        ).exists()
+
+        if group.status not in allowed_statuses or started_cycle_exists:
             messages.error(
                 request,
-                "Members cannot be re-added after the Ajo cycle has started."
+                "Members cannot be re-added after an Ajo cycle has started."
             )
             return redirect("groups:manage_members", group_id=group.id)
 
@@ -659,12 +756,13 @@ def readd_member(request, group_id, membership_id):
 
         member_name = membership.user.full_name
 
+        # Restore group membership.
         membership.status = GroupMembership.Status.APPROVED
         membership.reviewed_by = request.user
         membership.reviewed_at = timezone.now()
 
-        # Clear the current removal fields.
-        # The previous removal details remain in the history table.
+        # Clear current removal fields.
+        # Historical removal details remain in GroupMembershipHistory.
         membership.removed_by = None
         membership.removed_at = None
         membership.removal_reason = ""
@@ -678,6 +776,39 @@ def readd_member(request, group_id, membership_id):
             "removal_reason",
         ])
 
+        # Find previously withdrawn participation in unstarted cycles.
+        participants = CycleParticipant.objects.filter(
+            membership=membership,
+            cycle__group=group,
+            cycle__status__in=[
+                AjoCycle.Status.DRAFT,
+                AjoCycle.Status.SETUP,
+                AjoCycle.Status.READY,
+            ],
+            status=CycleParticipant.Status.WITHDRAWN,
+        )
+
+        # Identify cycles affected by this member rejoining.
+        affected_cycle_ids = list(
+            participants.values_list("cycle_id", flat=True)
+        )
+
+        # Restore participation without restoring an old payout position.
+        participants.update(
+            status=CycleParticipant.Status.ACTIVE,
+            payout_position=None,
+        )
+
+        # The participant list has changed, so the rotation
+        # must be reviewed again.
+        group.cycles.filter(
+            id__in=affected_cycle_ids,
+            status=AjoCycle.Status.READY,
+        ).update(
+            status=AjoCycle.Status.SETUP,
+            updated_at=timezone.now(),
+        )
+        # Preserve rejoining history.
         GroupMembershipHistory.objects.create(
             membership=membership,
             event_type=GroupMembershipHistory.EventType.REJOINED,

@@ -201,3 +201,128 @@ class GroupMembershipHistory(models.Model):
 
     def __str__(self):
         return f"{self.membership.user} - {self.get_event_type_display()}"
+
+
+class AjoCycle(models.Model):
+
+    class OnboardingType(models.TextChoices):
+        NEW = "new", "New Ajo"
+        EXISTING = "existing", "Existing Ajo"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SETUP = "setup", "Setting up"
+        READY = "ready", "Ready to start"
+        ACTIVE = "active", "Active"
+        PAUSED = "paused", "Paused"
+        COMPLETED = "completed", "Completed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    group = models.ForeignKey(
+        AjoGroup,
+        on_delete=models.CASCADE,
+        related_name="cycles"
+    )
+
+    cycle_number = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)]
+    )
+
+    onboarding_type = models.CharField(
+        max_length=10,
+        choices=OnboardingType.choices,
+        default=OnboardingType.NEW
+    )
+
+    contribution_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(0.01)]
+    )
+
+    frequency = models.CharField(
+        max_length=10,
+        choices=AjoGroup.Frequency.choices,
+        default=AjoGroup.Frequency.MONTHLY
+    )
+
+    payout_method = models.CharField(
+        max_length=10,
+        choices=AjoGroup.PayoutMethod.choices,
+        default=AjoGroup.PayoutMethod.MANUAL
+    )
+
+    start_date = models.DateField(
+        blank=True,
+        null=True
+    )
+
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["group", "cycle_number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["group", "cycle_number"],
+                name="unique_cycle_number_per_group"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.group.name} - Cycle {self.cycle_number}"
+
+
+class CycleParticipant(models.Model):
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ACTIVE = "active", "Active"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+
+    cycle = models.ForeignKey(
+        AjoCycle,
+        on_delete=models.CASCADE,
+        related_name="participants"
+    )
+
+    membership = models.ForeignKey(
+        GroupMembership,
+        on_delete=models.PROTECT,
+        related_name="cycle_participations"
+    )
+
+    payout_position = models.PositiveIntegerField(
+        blank=True,
+        null=True
+    )
+
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.PENDING
+    )
+
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["payout_position", "joined_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cycle", "membership"],
+                name="unique_membership_per_cycle"
+            ),
+            models.UniqueConstraint(
+                fields=["cycle", "payout_position"],
+                name="unique_payout_position_per_cycle"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.membership.user} - {self.cycle}"

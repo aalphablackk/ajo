@@ -9,6 +9,8 @@ from .models import (
     AjoGroup,
     GroupMembership,
     GroupMembershipHistory,
+    AjoCycle,
+    CycleParticipant
 )
 
 
@@ -60,6 +62,22 @@ class GroupTestBase(TestCase):
             user=self.member,
             role=GroupMembership.Role.MEMBER,
             status=GroupMembership.Status.PENDING,
+        )
+        self.cycle = AjoCycle.objects.create(
+            group=self.group,
+            cycle_number=1,
+            onboarding_type=AjoCycle.OnboardingType.NEW,
+            contribution_amount=self.group.contribution_amount,
+            frequency=self.group.frequency,
+            payout_method=self.group.payout_method,
+            start_date=self.group.start_date,
+            status=AjoCycle.Status.SETUP,
+        )
+
+        CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+            status=CycleParticipant.Status.ACTIVE,
         )
 
         self.client.force_login(self.owner)
@@ -149,6 +167,16 @@ class MembershipManagementTests(GroupTestBase):
             reverse("groups:manage_members", args=[self.group.id])
         )
 
+        participant = CycleParticipant.objects.get(
+            cycle=self.cycle,
+            membership=self.member_membership,
+        )
+
+        self.assertEqual(
+            participant.status,
+            CycleParticipant.Status.ACTIVE,
+        )
+
     def test_owner_can_reject_member(self):
         response = self.client.post(
             reverse(
@@ -195,6 +223,12 @@ class MembershipManagementTests(GroupTestBase):
             GroupMembership.Status.PENDING
         )
 
+        self.assertFalse(
+            CycleParticipant.objects.filter(
+                cycle=self.cycle,
+                membership=self.member_membership,
+            ).exists()
+        )
 
 class MembershipRemovalTests(GroupTestBase):
 
@@ -205,6 +239,13 @@ class MembershipRemovalTests(GroupTestBase):
         self.member_membership.reviewed_by = self.owner
         self.member_membership.reviewed_at = timezone.now()
         self.member_membership.save()
+
+        self.member_participant = CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.ACTIVE,
+            payout_position=2,
+        )
 
     def test_owner_can_remove_approved_member(self):
         response = self.client.post(
@@ -239,6 +280,59 @@ class MembershipRemovalTests(GroupTestBase):
             ).exists()
         )
 
+        self.member_participant.refresh_from_db()
+
+        self.assertEqual(
+            self.member_participant.status,
+            CycleParticipant.Status.WITHDRAWN
+        )
+
+        self.assertIsNone(
+            self.member_participant.payout_position
+        )
+
+    def test_removal_resets_ready_cycle_to_setup(self):
+        self.cycle.status = AjoCycle.Status.READY
+        self.cycle.save()
+
+        self.client.post(
+            reverse(
+                "groups:remove_member",
+                args=[self.group.id, self.member_membership.id]
+            ),
+            {"removal_reason": "Testing cycle reset."}
+        )
+
+        self.cycle.refresh_from_db()
+
+        self.assertEqual(
+            self.cycle.status,
+            AjoCycle.Status.SETUP
+        )
+    def test_removal_is_blocked_when_cycle_is_active(self):
+        self.cycle.status = AjoCycle.Status.ACTIVE
+        self.cycle.save()
+
+        self.client.post(
+            reverse(
+                "groups:remove_member",
+                args=[self.group.id, self.member_membership.id]
+            )
+        )
+
+        self.member_membership.refresh_from_db()
+
+        self.member_participant.refresh_from_db()
+
+        self.assertEqual(
+            self.member_membership.status,
+            GroupMembership.Status.APPROVED
+        )
+
+        self.assertEqual(
+            self.member_participant.status,
+            CycleParticipant.Status.ACTIVE
+        )
     def test_removal_is_blocked_after_cycle_starts(self):
         self.group.status = AjoGroup.Status.ACTIVE
         self.group.save()
@@ -284,6 +378,13 @@ class MembershipRejoinTests(GroupTestBase):
         self.member_membership.removal_reason = "Previous removal."
         self.member_membership.save()
 
+        self.member_participant = CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.WITHDRAWN,
+            payout_position=None,
+        )
+
     def test_owner_can_readd_removed_member(self):
         response = self.client.post(
             reverse(
@@ -311,6 +412,59 @@ class MembershipRejoinTests(GroupTestBase):
                 membership=self.member_membership,
                 event_type=GroupMembershipHistory.EventType.REJOINED
             ).exists()
+        )
+
+        self.member_participant.refresh_from_db()
+
+        self.assertEqual(
+            self.member_participant.status,
+            CycleParticipant.Status.ACTIVE
+        )
+
+        self.assertIsNone(
+            self.member_participant.payout_position
+        )
+
+    def test_rejoining_resets_ready_cycle_to_setup(self):
+        self.cycle.status = AjoCycle.Status.READY
+        self.cycle.save()
+
+        self.client.post(
+            reverse(
+                "groups:readd_member",
+                args=[self.group.id, self.member_membership.id]
+            )
+        )
+
+        self.cycle.refresh_from_db()
+
+        self.assertEqual(
+            self.cycle.status,
+            AjoCycle.Status.SETUP
+        )
+
+    def test_rejoining_is_blocked_when_cycle_is_active(self):
+        self.cycle.status = AjoCycle.Status.ACTIVE
+        self.cycle.save()
+
+        self.client.post(
+            reverse(
+                "groups:readd_member",
+                args=[self.group.id, self.member_membership.id]
+            )
+        )
+
+        self.member_membership.refresh_from_db()
+        self.member_participant.refresh_from_db()
+
+        self.assertEqual(
+            self.member_membership.status,
+            GroupMembership.Status.REMOVED
+        )
+
+        self.assertEqual(
+            self.member_participant.status,
+            CycleParticipant.Status.WITHDRAWN
         )
 
     def test_readding_is_blocked_when_group_is_full(self):
@@ -391,4 +545,62 @@ class MembershipRejoinTests(GroupTestBase):
                 membership=self.member_membership
             ).count(),
             2
+        )
+
+
+class CycleCreationTests(GroupTestBase):
+
+    def test_creating_group_creates_first_cycle(self):
+        response = self.client.post(
+            reverse("groups:create_group"),
+            {
+                "name": "New Test Ajo",
+                "description": "Testing automatic cycle creation",
+                "contribution_amount": "25000.00",
+                "frequency": "monthly",
+                "max_members": 6,
+                "start_date": "",
+                "payout_method": "manual",
+            },
+        )
+
+        self.assertRedirects(
+            response,
+            reverse("groups:my_groups"),
+        )
+
+        group = AjoGroup.objects.get(name="New Test Ajo")
+
+        cycle = AjoCycle.objects.get(
+            group=group,
+            cycle_number=1,
+        )
+
+        self.assertEqual(
+            cycle.contribution_amount,
+            Decimal("25000.00"),
+        )
+
+        self.assertEqual(
+            cycle.frequency,
+            AjoCycle._meta.get_field("frequency").default
+            if False else "monthly",
+        )
+
+        self.assertEqual(
+            cycle.status,
+            AjoCycle.Status.DRAFT,
+        )
+
+        owner_membership = GroupMembership.objects.get(
+            group=group,
+            user=self.owner,
+        )
+
+        self.assertTrue(
+            CycleParticipant.objects.filter(
+                cycle=cycle,
+                membership=owner_membership,
+                status=CycleParticipant.Status.ACTIVE,
+            ).exists()
         )
