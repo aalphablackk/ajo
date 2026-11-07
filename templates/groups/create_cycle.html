@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Create Cycle | Digital Ajo</title>
+
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+    >
+</head>
+
+<body class="bg-light">
+
+<div class="container py-5">
+
+    <div class="mb-4">
+        <a href="{% url 'groups:cycle_overview' group.id %}"
+           class="text-decoration-none">
+            &larr; Back to Cycles
+        </a>
+    </div>
+
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+
+            <div class="mb-4">
+                <h2>Create New Cycle</h2>
+                <p class="text-muted">
+                    Create the next Ajo cycle for {{ group.name }}.
+                </p>
+            </div>
+
+            <div class="alert alert-info">
+                <strong>Previous cycle:</strong>
+                Cycle {{ latest_cycle.cycle_number }} completed.
+
+                <br>
+
+                The new cycle will be created as a draft.
+                It will not start automatically.
+            </div>
+
+            <div class="card border-0 shadow-sm">
+                <div class="card-body p-4">
+
+                    <form method="POST">
+
+                        {% csrf_token %}
+
+                        {% if form.non_field_errors %}
+                            <div class="alert alert-danger">
+                                {{ form.non_field_errors }}
+                            </div>
+                        {% endif %}
+
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Contribution Amount (₦)
+                            </label>
+
+                            {{ form.contribution_amount }}
+
+                            {% for error in form.contribution_amount.errors %}
+                                <div class="text-danger small">
+                                    {{ error }}
+                                </div>
+                            {% endfor %}
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Contribution Frequency
+                            </label>
+
+                            {{ form.frequency }}
+
+                            {% for error in form.frequency.errors %}
+                                <div class="text-danger small">
+                                    {{ error }}
+                                </div>
+                            {% endfor %}
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">
+                                Payout Method
+                            </label>
+
+                            {{ form.payout_method }}
+
+                            {% for error in form.payout_method.errors %}
+                                <div class="text-danger small">
+                                    {{ error }}
+                                </div>
+                            {% endfor %}
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="form-label">
+                                Start Date
+                            </label>
+
+                            {{ form.start_date }}
+
+                            {% for error in form.start_date.errors %}
+                                <div class="text-danger small">
+                                    {{ error }}
+                                </div>
+                            {% endfor %}
+                        </div>
+
+                        <hr>
+
+                        <h5 class="mb-2">Select Participants</h5>
+
+                        <p class="text-muted small">
+                            Select the approved members who will participate
+                            in this cycle.
+                        </p>
+
+                        {% for error in form.participants.errors %}
+                            <div class="alert alert-danger py-2">
+                                {{ error }}
+                            </div>
+                        {% endfor %}
+
+                        <div class="border rounded p-3 mb-4">
+
+                            {% for participant in form.participants %}
+
+                                <div class="form-check mb-2">
+                                    {{ participant.tag }}
+
+                                    <label class="form-check-label"
+                                           for="{{ participant.id_for_label }}">
+                                        {{ participant.choice_label }}
+                                    </label>
+                                </div>
+
+                            {% empty %}
+
+                                <p class="text-muted mb-0">
+                                    No approved members available.
+                                </p>
+
+                            {% endfor %}
+
+                        </div>
+
+                        <button type="submit" class="btn btn-success">
+                            Create Cycle
+                        </button>
+
+                        <a href="{% url 'groups:cycle_overview' group.id %}"
+                           class="btn btn-outline-secondary">
+                            Cancel
+                        </a>
+
+                    </form>
+
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+</body>
+</html>

@@ -106,7 +106,10 @@
     </form>
 
 {% endif %}
-
+                        <a href="{% url 'groups:cycle_overview' membership.group.id %}"
+                        class="btn btn-outline-success btn-sm">
+                            View Cycles
+                        </a>
                         {% if membership.group.status == "draft" or membership.group.status == "open" %}
                             {% if membership.group.status == "draft" %}
                                 <form method="POST"

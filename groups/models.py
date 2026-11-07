@@ -257,6 +257,19 @@ class AjoCycle(models.Model):
         null=True
     )
 
+    rotation_confirmed_at = models.DateTimeField(
+        blank=True,
+        null=True
+    )
+
+    rotation_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="confirmed_ajo_rotations"
+    )
+
     status = models.CharField(
         max_length=12,
         choices=Status.choices,
@@ -300,7 +313,8 @@ class CycleParticipant(models.Model):
 
     payout_position = models.PositiveIntegerField(
         blank=True,
-        null=True
+        null=True,
+        validators=[MinValueValidator(1)]
     )
 
     status = models.CharField(

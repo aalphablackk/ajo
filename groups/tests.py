@@ -309,6 +309,66 @@ class MembershipRemovalTests(GroupTestBase):
             self.cycle.status,
             AjoCycle.Status.SETUP
         )
+
+    def test_removal_invalidates_confirmed_rotation(self):
+    # Prepare a confirmed rotation.
+        self.cycle.status = AjoCycle.Status.READY
+        self.cycle.rotation_confirmed_at = timezone.now()
+        self.cycle.rotation_confirmed_by = self.owner
+        self.cycle.save()
+
+        # Give the owner an existing payout position.
+        CycleParticipant.objects.update_or_create(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+            defaults={
+                "status": CycleParticipant.Status.ACTIVE,
+                "payout_position": 1,
+            }
+        )
+
+        self.member_participant.payout_position = 2
+        self.member_participant.save()
+
+        # Remove the member.
+        self.client.post(
+            reverse(
+                "groups:remove_member",
+                args=[self.group.id, self.member_membership.id]
+            ),
+            {"removal_reason": "Testing rotation invalidation."}
+        )
+
+        self.cycle.refresh_from_db()
+        self.member_participant.refresh_from_db()
+
+        # The cycle must return to SETUP.
+        self.assertEqual(
+            self.cycle.status,
+            AjoCycle.Status.SETUP
+        )
+
+        # Previous confirmation must be cleared.
+        self.assertIsNone(self.cycle.rotation_confirmed_at)
+        self.assertIsNone(self.cycle.rotation_confirmed_by)
+
+        # The removed member must be withdrawn.
+        self.assertEqual(
+            self.member_participant.status,
+            CycleParticipant.Status.WITHDRAWN
+        )
+
+        # All remaining active participants must lose old positions.
+        active_participants = CycleParticipant.objects.filter(
+            cycle=self.cycle,
+            status=CycleParticipant.Status.ACTIVE
+        )
+
+        self.assertTrue(active_participants.exists())
+
+        for participant in active_participants:
+            self.assertIsNone(participant.payout_position)
+
     def test_removal_is_blocked_when_cycle_is_active(self):
         self.cycle.status = AjoCycle.Status.ACTIVE
         self.cycle.save()
@@ -443,6 +503,61 @@ class MembershipRejoinTests(GroupTestBase):
             AjoCycle.Status.SETUP
         )
 
+    def test_rejoining_invalidates_confirmed_rotation(self):
+    # Prepare a confirmed rotation.
+        self.cycle.status = AjoCycle.Status.READY
+        self.cycle.rotation_confirmed_at = timezone.now()
+        self.cycle.rotation_confirmed_by = self.owner
+        self.cycle.save()
+
+        # Give the owner an existing payout position.
+        CycleParticipant.objects.update_or_create(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+            defaults={
+                "status": CycleParticipant.Status.ACTIVE,
+                "payout_position": 1,
+            }
+        )
+
+        # Re-add the member.
+        self.client.post(
+            reverse(
+                "groups:readd_member",
+                args=[self.group.id, self.member_membership.id]
+            )
+        )
+
+        self.cycle.refresh_from_db()
+        self.member_participant.refresh_from_db()
+
+        # The cycle must return to SETUP.
+        self.assertEqual(
+            self.cycle.status,
+            AjoCycle.Status.SETUP
+        )
+
+        # Previous confirmation must be cleared.
+        self.assertIsNone(self.cycle.rotation_confirmed_at)
+        self.assertIsNone(self.cycle.rotation_confirmed_by)
+
+        # The member must be active again.
+        self.assertEqual(
+            self.member_participant.status,
+            CycleParticipant.Status.ACTIVE
+        )
+
+        # All active participants must lose old positions.
+        active_participants = CycleParticipant.objects.filter(
+            cycle=self.cycle,
+            status=CycleParticipant.Status.ACTIVE
+        )
+
+        self.assertTrue(active_participants.exists())
+
+        for participant in active_participants:
+            self.assertIsNone(participant.payout_position)
+
     def test_rejoining_is_blocked_when_cycle_is_active(self):
         self.cycle.status = AjoCycle.Status.ACTIVE
         self.cycle.save()
@@ -547,60 +662,448 @@ class MembershipRejoinTests(GroupTestBase):
             2
         )
 
-
 class CycleCreationTests(GroupTestBase):
 
-    def test_creating_group_creates_first_cycle(self):
-        response = self.client.post(
-            reverse("groups:create_group"),
-            {
-                "name": "New Test Ajo",
-                "description": "Testing automatic cycle creation",
-                "contribution_amount": "25000.00",
-                "frequency": "monthly",
-                "max_members": 6,
-                "start_date": "",
-                "payout_method": "manual",
+    def setUp(self):
+        super().setUp()
+
+        # Approve the second member.
+        self.member_membership.status = GroupMembership.Status.APPROVED
+        self.member_membership.reviewed_by = self.owner
+        self.member_membership.reviewed_at = timezone.now()
+        self.member_membership.save()
+
+        # Create the initial cycle.
+        # Reuse the initial cycle created for the group.
+        self.cycle = AjoCycle.objects.get(
+            group=self.group,
+            cycle_number=1,
+        )
+
+        # Mark it as completed so the next cycle can be created.
+        self.cycle.status = AjoCycle.Status.COMPLETED
+        self.cycle.save(update_fields=["status"])
+
+        # Ensure both members are participants in the completed cycle.
+        CycleParticipant.objects.update_or_create(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+            defaults={
+                "status": CycleParticipant.Status.ACTIVE,
+                "payout_position": 1,
             },
+        )
+
+        CycleParticipant.objects.update_or_create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            defaults={
+                "status": CycleParticipant.Status.ACTIVE,
+                "payout_position": 2,
+            },
+        )
+
+        self.create_url = reverse(
+            "groups:create_cycle",
+            args=[self.group.id]
+        )
+
+        self.valid_data = {
+            "contribution_amount": "15000.00",
+            "frequency": AjoGroup.Frequency.WEEKLY,
+            "payout_method": AjoGroup.PayoutMethod.MANUAL,
+            "start_date": "",
+            "participants": [
+                self.owner_membership.id,
+                self.member_membership.id,
+            ],
+        }
+
+    def test_owner_can_create_next_cycle(self):
+
+        response = self.client.post(
+            self.create_url,
+            self.valid_data
         )
 
         self.assertRedirects(
             response,
-            reverse("groups:my_groups"),
+            reverse("groups:cycle_overview", args=[self.group.id])
         )
 
-        group = AjoGroup.objects.get(name="New Test Ajo")
-
-        cycle = AjoCycle.objects.get(
-            group=group,
-            cycle_number=1,
-        )
-
-        self.assertEqual(
-            cycle.contribution_amount,
-            Decimal("25000.00"),
+        new_cycle = AjoCycle.objects.get(
+            group=self.group,
+            cycle_number=2
         )
 
         self.assertEqual(
-            cycle.frequency,
-            AjoCycle._meta.get_field("frequency").default
-            if False else "monthly",
+            new_cycle.status,
+            AjoCycle.Status.DRAFT
         )
 
         self.assertEqual(
-            cycle.status,
-            AjoCycle.Status.DRAFT,
+            new_cycle.contribution_amount,
+            Decimal("15000.00")
         )
 
-        owner_membership = GroupMembership.objects.get(
-            group=group,
-            user=self.owner,
+        self.assertEqual(
+            new_cycle.frequency,
+            AjoGroup.Frequency.WEEKLY
+        )
+
+        self.assertEqual(
+            new_cycle.participants.count(),
+            2
+        )
+
+    def test_cycle_number_increments_automatically(self):
+
+        self.cycle.cycle_number = 3
+        self.cycle.save()
+
+        response = self.client.post(
+            self.create_url,
+            self.valid_data
         )
 
         self.assertTrue(
-            CycleParticipant.objects.filter(
-                cycle=cycle,
-                membership=owner_membership,
-                status=CycleParticipant.Status.ACTIVE,
+            AjoCycle.objects.filter(
+                group=self.group,
+                cycle_number=4
             ).exists()
         )
+
+    def test_cannot_create_cycle_before_previous_is_completed(self):
+
+        self.cycle.status = AjoCycle.Status.ACTIVE
+        self.cycle.save()
+
+        response = self.client.post(
+            self.create_url,
+            self.valid_data
+        )
+
+        self.assertFalse(
+            AjoCycle.objects.filter(
+                group=self.group,
+                cycle_number=2
+            ).exists()
+        )
+
+    def test_non_owner_cannot_create_cycle(self):
+
+        self.client.force_login(self.member)
+
+        response = self.client.post(
+            self.create_url,
+            self.valid_data
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+        self.assertFalse(
+            AjoCycle.objects.filter(
+                group=self.group,
+                cycle_number=2
+            ).exists()
+        )
+
+    def test_cycle_requires_at_least_two_participants(self):
+
+        invalid_data = self.valid_data.copy()
+
+        invalid_data["participants"] = [
+            self.owner_membership.id
+        ]
+
+        response = self.client.post(
+            self.create_url,
+            invalid_data
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        self.assertFalse(
+            AjoCycle.objects.filter(
+                group=self.group,
+                cycle_number=2
+            ).exists()
+        )
+
+    def test_new_cycle_participants_start_without_positions(self):
+
+        self.client.post(
+            self.create_url,
+            self.valid_data
+        )
+
+        new_cycle = AjoCycle.objects.get(
+            group=self.group,
+            cycle_number=2
+        )
+
+        self.assertFalse(
+            new_cycle.participants.filter(
+                payout_position__isnull=False
+            ).exists()
+        )
+
+
+class RotationManagementTests(GroupTestBase):
+
+    def setUp(self):
+        super().setUp()
+
+        # Approve the second member.
+        self.member_membership.status = GroupMembership.Status.APPROVED
+        self.member_membership.reviewed_by = self.owner
+        self.member_membership.reviewed_at = timezone.now()
+        self.member_membership.save()
+
+        # Reuse the initial cycle.
+        self.cycle = AjoCycle.objects.get(
+            group=self.group,
+            cycle_number=1,
+        )
+
+        self.cycle.status = AjoCycle.Status.SETUP
+        self.cycle.payout_method = AjoGroup.PayoutMethod.MANUAL
+        self.cycle.rotation_confirmed_at = None
+        self.cycle.rotation_confirmed_by = None
+        self.cycle.save()
+
+        # Ensure both members participate in the cycle.
+        CycleParticipant.objects.update_or_create(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+            defaults={
+                "status": CycleParticipant.Status.ACTIVE,
+                "payout_position": None,
+            },
+        )
+
+        CycleParticipant.objects.update_or_create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            defaults={
+                "status": CycleParticipant.Status.ACTIVE,
+                "payout_position": None,
+            },
+        )
+
+        self.client.force_login(self.owner)
+
+        self.rotation_url = reverse(
+            "groups:manage_rotation",
+            args=[self.group.id, self.cycle.id],
+        )
+
+        self.random_url = reverse(
+            "groups:generate_random_rotation",
+            args=[self.group.id, self.cycle.id],
+        )
+
+        self.confirm_url = reverse(
+            "groups:confirm_rotation",
+            args=[self.group.id, self.cycle.id],
+        )
+
+        self.participant_ids = list(
+            self.cycle.participants.filter(
+                status=CycleParticipant.Status.ACTIVE
+            ).values_list("id", flat=True)
+        )
+
+    def arrange_manually(self, ordered_ids=None):
+
+        if ordered_ids is None:
+            ordered_ids = self.participant_ids
+
+        return self.client.post(
+            self.rotation_url,
+            {
+                "participant_order": [
+                    str(participant_id)
+                    for participant_id in ordered_ids
+                ]
+            },
+        )
+
+    def test_owner_can_assign_manual_positions(self):
+
+        ordered_ids = list(reversed(self.participant_ids))
+
+        response = self.arrange_manually(ordered_ids)
+
+        self.assertEqual(response.status_code, 302)
+
+        participants = list(
+            self.cycle.participants.filter(
+                status=CycleParticipant.Status.ACTIVE
+            ).order_by("payout_position")
+        )
+
+        self.assertEqual(
+            [p.id for p in participants],
+            ordered_ids,
+        )
+
+        self.assertEqual(
+            [p.payout_position for p in participants],
+            [1, 2],
+        )
+
+    def test_non_owner_cannot_manage_rotation(self):
+
+        self.client.force_login(self.member)
+
+        response = self.client.get(self.rotation_url)
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_random_rotation_generates_positions(self):
+
+        self.cycle.payout_method = AjoGroup.PayoutMethod.RANDOM
+        self.cycle.save(update_fields=["payout_method"])
+
+        response = self.client.post(self.random_url)
+
+        self.assertEqual(response.status_code, 302)
+
+        positions = list(
+            self.cycle.participants.filter(
+                status=CycleParticipant.Status.ACTIVE
+            ).values_list("payout_position", flat=True)
+        )
+
+        self.assertEqual(sorted(positions), [1, 2])
+
+    def test_random_rotation_can_be_manually_adjusted(self):
+
+        self.cycle.payout_method = AjoGroup.PayoutMethod.RANDOM
+        self.cycle.save(update_fields=["payout_method"])
+
+        self.client.post(self.random_url)
+
+        ordered_ids = list(reversed(self.participant_ids))
+
+        response = self.arrange_manually(ordered_ids)
+
+        self.assertEqual(response.status_code, 302)
+
+        participants = list(
+            self.cycle.participants.filter(
+                status=CycleParticipant.Status.ACTIVE
+            ).order_by("payout_position")
+        )
+
+        self.assertEqual(
+            [p.id for p in participants],
+            ordered_ids,
+        )
+
+    def test_random_generation_requires_random_method(self):
+
+        response = self.client.post(self.random_url)
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_owner_can_confirm_rotation(self):
+
+        self.arrange_manually()
+
+        response = self.client.post(self.confirm_url)
+
+        self.assertEqual(response.status_code, 302)
+
+        self.cycle.refresh_from_db()
+
+        self.assertEqual(
+            self.cycle.status,
+            AjoCycle.Status.READY,
+        )
+
+        self.assertIsNotNone(
+            self.cycle.rotation_confirmed_at
+        )
+
+        self.assertEqual(
+            self.cycle.rotation_confirmed_by,
+            self.owner,
+        )
+
+    def test_cannot_confirm_rotation_without_positions(self):
+
+        response = self.client.post(self.confirm_url)
+
+        self.assertEqual(response.status_code, 302)
+
+        self.cycle.refresh_from_db()
+
+        self.assertIsNone(
+            self.cycle.rotation_confirmed_at
+        )
+
+        self.assertNotEqual(
+            self.cycle.status,
+            AjoCycle.Status.READY,
+        )
+
+    def test_confirmed_rotation_cannot_be_changed(self):
+
+        self.arrange_manually()
+
+        self.client.post(self.confirm_url)
+
+        original_positions = dict(
+            self.cycle.participants.values_list(
+                "id",
+                "payout_position",
+            )
+        )
+
+        self.arrange_manually(
+            list(reversed(self.participant_ids))
+        )
+
+        updated_positions = dict(
+            self.cycle.participants.values_list(
+                "id",
+                "payout_position",
+            )
+        )
+
+        self.assertEqual(
+            original_positions,
+            updated_positions,
+        )
+
+    def test_confirmed_random_rotation_cannot_be_regenerated(self):
+
+        self.cycle.payout_method = AjoGroup.PayoutMethod.RANDOM
+        self.cycle.save(update_fields=["payout_method"])
+
+        self.client.post(self.random_url)
+        self.client.post(self.confirm_url)
+
+        original_positions = dict(
+            self.cycle.participants.values_list(
+                "id",
+                "payout_position",
+            )
+        )
+
+        self.client.post(self.random_url)
+
+        updated_positions = dict(
+            self.cycle.participants.values_list(
+                "id",
+                "payout_position",
+            )
+        )
+
+        self.assertEqual(
+            original_positions,
+            updated_positions,
+        )
+

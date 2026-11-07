@@ -6,6 +6,8 @@ app_name = "groups"
 urlpatterns = [
     path("create/", views.create_group, name="create_group"),
     path("my-groups/", views.my_groups, name="my_groups"),
+    path("<int:group_id>/cycles/",views.cycle_overview,name="cycle_overview"),
+    path("<int:group_id>/cycles/create/",views.create_cycle,name="create_cycle"),
     path("<int:group_id>/edit/",views.edit_group,name="edit_group"),
     path("invite/<uuid:token>/",views.invitation_detail,name="invitation_detail"),
     path("<int:group_id>/toggle-invitation/",views.toggle_invitation,name="toggle_invitation"),
@@ -19,4 +21,7 @@ urlpatterns = [
     path("<int:group_id>/members/<int:membership_id>/reject/",views.reject_member,name="reject_member"),
     path("<int:group_id>/members/<int:membership_id>/remove/",views.remove_member,name="remove_member"),
     path("<int:group_id>/members/<int:membership_id>/readd/",views.readd_member,name="readd_member"),
+    path("<int:group_id>/cycles/<int:cycle_id>/rotation/",views.manage_rotation,name="manage_rotation"),
+    path("<int:group_id>/cycles/<int:cycle_id>/rotation/random/",views.generate_random_rotation,name="generate_random_rotation"),
+    path("<int:group_id>/cycles/<int:cycle_id>/rotation/confirm/",views.confirm_rotation,name="confirm_rotation"),
 ]

@@ -5,10 +5,10 @@ from django.db import transaction
 from django.utils import timezone
 from django.urls import reverse
 from django.views.decorators.http import require_POST
-from .forms import AjoGroupForm
+from .forms import AjoGroupForm, AjoCycleForm
 from .models import AjoGroup, GroupMembership, GroupMembershipHistory,AjoCycle,CycleParticipant
 from django.db.models import Count, Q
-
+import random
 
 
 @login_required
@@ -83,6 +83,63 @@ def my_groups(request):
         request,
         "groups/my_groups.html",
         {"memberships": memberships}
+    )
+
+@login_required
+def cycle_overview(request, group_id):
+
+    group = get_object_or_404(
+        AjoGroup,
+        id=group_id
+    )
+
+    # Confirm that the user is an approved group member.
+    membership = get_object_or_404(
+        GroupMembership,
+        group=group,
+        user=request.user,
+        status=GroupMembership.Status.APPROVED,
+    )
+
+    # Start with all cycles belonging to this group.
+    cycles = group.cycles.all()
+
+    # Ordinary members can only see cycles they participate in.
+    if membership.role != GroupMembership.Role.OWNER:
+        cycles = cycles.filter(
+            participants__membership=membership
+        )
+
+    cycles = (
+        cycles
+        .annotate(
+            active_participant_count=Count(
+                "participants",
+                filter=Q(
+                    participants__status=CycleParticipant.Status.ACTIVE
+                ),
+                distinct=True,
+            )
+        )
+        .prefetch_related(
+            "participants__membership__user"
+        )
+        .order_by("cycle_number")
+    )
+    latest_cycle = (
+        group.cycles
+        .order_by("-cycle_number")
+        .first()
+    )
+    return render(
+        request,
+        "groups/cycle_overview.html",
+        {
+            "group": group,
+            "cycles": cycles,
+            "membership": membership,
+            "latest_cycle": latest_cycle,
+        }
     )
 
 @login_required
@@ -594,6 +651,7 @@ def reject_member(request, group_id, membership_id):
         )
 
     return redirect("groups:manage_members", group_id=group.id)
+
 @login_required
 @require_POST
 def remove_member(request, group_id, membership_id):
@@ -677,14 +735,27 @@ def remove_member(request, group_id, membership_id):
             payout_position=None,
         )
 
-        # A changed participant list invalidates a READY rotation.
-        group.cycles.filter(
-            id__in=affected_cycle_ids,
-            status=AjoCycle.Status.READY,
-        ).update(
-            status=AjoCycle.Status.SETUP,
-            updated_at=timezone.now(),
-        )
+        # A changed participant list invalidates the entire rotation.
+        if affected_cycle_ids:
+            affected_cycles = group.cycles.filter(
+                id__in=affected_cycle_ids,
+            )
+
+            # Clear every active participant's previous payout position.
+            CycleParticipant.objects.filter(
+                cycle_id__in=affected_cycle_ids,
+                status=CycleParticipant.Status.ACTIVE,
+            ).update(
+                payout_position=None,
+            )
+
+            # Require the owner to arrange and confirm the rotation again.
+            affected_cycles.update(
+                status=AjoCycle.Status.SETUP,
+                rotation_confirmed_at=None,
+                rotation_confirmed_by=None,
+                updated_at=timezone.now(),
+            )
 
         # Preserve removal history.
         GroupMembershipHistory.objects.create(
@@ -799,15 +870,27 @@ def readd_member(request, group_id, membership_id):
             payout_position=None,
         )
 
-        # The participant list has changed, so the rotation
-        # must be reviewed again.
-        group.cycles.filter(
-            id__in=affected_cycle_ids,
-            status=AjoCycle.Status.READY,
-        ).update(
-            status=AjoCycle.Status.SETUP,
-            updated_at=timezone.now(),
-        )
+        # A changed participant list invalidates the entire rotation.
+        if affected_cycle_ids:
+            affected_cycles = group.cycles.filter(
+                id__in=affected_cycle_ids,
+            )
+
+            # Clear every active participant's previous payout position.
+            CycleParticipant.objects.filter(
+                cycle_id__in=affected_cycle_ids,
+                status=CycleParticipant.Status.ACTIVE,
+            ).update(
+                payout_position=None,
+            )
+
+            # Require the owner to arrange and confirm the rotation again.
+            affected_cycles.update(
+                status=AjoCycle.Status.SETUP,
+                rotation_confirmed_at=None,
+                rotation_confirmed_by=None,
+                updated_at=timezone.now(),
+            )
         # Preserve rejoining history.
         GroupMembershipHistory.objects.create(
             membership=membership,
@@ -822,3 +905,408 @@ def readd_member(request, group_id, membership_id):
         )
 
     return redirect("groups:manage_members", group_id=group.id)
+
+@login_required
+def create_cycle(request, group_id):
+
+    with transaction.atomic():
+
+        # Lock the group to prevent simultaneous cycle creation.
+        group = get_object_or_404(
+            AjoGroup.objects.select_for_update(),
+            id=group_id,
+            owner=request.user
+        )
+
+        # Get the latest cycle.
+        latest_cycle = (
+            group.cycles
+            .select_for_update()
+            .order_by("-cycle_number")
+            .first()
+        )
+
+        # A new cycle can only be created after the previous one
+        # has been completed.
+        if not latest_cycle:
+            messages.error(
+                request,
+                "This group has no existing cycle. Please contact support."
+            )
+            return redirect("groups:cycle_overview", group_id=group.id)
+
+        if latest_cycle.status != AjoCycle.Status.COMPLETED:
+            messages.error(
+                request,
+                "You can only create a new cycle after the previous cycle has been completed."
+            )
+            return redirect("groups:cycle_overview", group_id=group.id)
+
+        if request.method == "POST":
+
+            form = AjoCycleForm(
+                request.POST,
+                group=group
+            )
+
+            if form.is_valid():
+
+                # Create the next cycle.
+                cycle = form.save(commit=False)
+
+                cycle.group = group
+                cycle.cycle_number = latest_cycle.cycle_number + 1
+                cycle.onboarding_type = AjoCycle.OnboardingType.NEW
+                cycle.status = AjoCycle.Status.DRAFT
+
+                cycle.save()
+
+                # Add the selected members as cycle participants.
+                selected_members = form.cleaned_data["participants"]
+
+                CycleParticipant.objects.bulk_create([
+                    CycleParticipant(
+                        cycle=cycle,
+                        membership=membership,
+                        status=CycleParticipant.Status.ACTIVE
+                    )
+                    for membership in selected_members
+                ])
+
+                messages.success(
+                    request,
+                    f"Cycle {cycle.cycle_number} has been created successfully."
+                )
+
+                return redirect(
+                    "groups:cycle_overview",
+                    group_id=group.id
+                )
+
+        else:
+            form = AjoCycleForm(group=group)
+
+    return render(
+        request,
+        "groups/create_cycle.html",
+        {
+            "form": form,
+            "group": group,
+            "latest_cycle": latest_cycle,
+        }
+    )
+
+def assign_payout_positions(participants, ordered_ids):
+    """
+    Assign consecutive payout positions safely.
+
+    Existing positions are temporarily cleared to prevent
+    unique constraint conflicts when participants swap places.
+    """
+
+    CycleParticipant.objects.filter(
+        cycle=participants[0].cycle
+    ).update(payout_position=None)
+
+    participant_map = {
+        participant.id: participant
+        for participant in participants
+    }
+
+    for position, participant_id in enumerate(ordered_ids, start=1):
+        participant_map[participant_id].payout_position = position
+
+    CycleParticipant.objects.bulk_update(
+        participants,
+        ["payout_position"]
+    )
+
+
+@login_required
+def manage_rotation(request, group_id, cycle_id):
+
+    with transaction.atomic():
+
+        group = get_object_or_404(
+            AjoGroup.objects.select_for_update(),
+            id=group_id,
+            owner=request.user
+        )
+
+        cycle = get_object_or_404(
+            AjoCycle.objects.select_for_update(),
+            id=cycle_id,
+            group=group
+        )
+
+        if (
+            cycle.rotation_confirmed_at
+            or cycle.status in [
+                AjoCycle.Status.ACTIVE,
+                AjoCycle.Status.PAUSED,
+                AjoCycle.Status.COMPLETED,
+                AjoCycle.Status.CANCELLED,
+            ]
+        ):
+            messages.error(
+                request,
+                "This payout rotation is locked."
+            )
+            return redirect(
+                "groups:cycle_overview",
+                group_id=group.id
+            )
+
+        participants = list(
+            CycleParticipant.objects
+            .select_for_update()
+            .filter(
+                cycle=cycle,
+                status=CycleParticipant.Status.ACTIVE
+            )
+            .select_related("membership__user")
+            .order_by("payout_position", "joined_at")
+        )
+
+        if request.method == "POST":
+
+            ordered_ids = request.POST.getlist("participant_order")
+
+            participant_ids = {
+                participant.id
+                for participant in participants
+            }
+
+            try:
+                submitted_ids = [int(value) for value in ordered_ids]
+            except (ValueError, TypeError):
+                submitted_ids = []
+
+            if (
+                len(submitted_ids) != len(participant_ids)
+                or set(submitted_ids) != participant_ids
+            ):
+                messages.error(
+                    request,
+                    "Invalid payout arrangement. Please arrange all active participants."
+                )
+
+            elif len(participants) < 2:
+                messages.error(
+                    request,
+                    "A rotation requires at least two active participants."
+                )
+
+            else:
+                assign_payout_positions(
+                    participants,
+                    submitted_ids
+                )
+
+                cycle.status = AjoCycle.Status.SETUP
+                cycle.save(update_fields=[
+                    "status",
+                    "updated_at"
+                ])
+
+                messages.success(
+                    request,
+                    "Payout positions have been saved. Review and confirm the rotation when ready."
+                )
+
+                return redirect(
+                    "groups:manage_rotation",
+                    group_id=group.id,
+                    cycle_id=cycle.id
+                )
+
+    return render(
+        request,
+        "groups/manage_rotation.html",
+        {
+            "group": group,
+            "cycle": cycle,
+            "participants": participants,
+        }
+    )
+
+
+@login_required
+@require_POST
+def generate_random_rotation(request, group_id, cycle_id):
+
+    with transaction.atomic():
+
+        group = get_object_or_404(
+            AjoGroup.objects.select_for_update(),
+            id=group_id,
+            owner=request.user
+        )
+
+        cycle = get_object_or_404(
+            AjoCycle.objects.select_for_update(),
+            id=cycle_id,
+            group=group,
+            payout_method=AjoGroup.PayoutMethod.RANDOM
+        )
+
+        if (
+            cycle.rotation_confirmed_at
+            or cycle.status in [
+                AjoCycle.Status.ACTIVE,
+                AjoCycle.Status.PAUSED,
+                AjoCycle.Status.COMPLETED,
+                AjoCycle.Status.CANCELLED,
+            ]
+        ):
+            messages.error(
+                request,
+                "This payout rotation can no longer be changed."
+            )
+
+            return redirect(
+                "groups:cycle_overview",
+                group_id=group.id
+            )
+
+        participants = list(
+            CycleParticipant.objects
+            .select_for_update()
+            .filter(
+                cycle=cycle,
+                status=CycleParticipant.Status.ACTIVE
+            )
+        )
+
+        if len(participants) < 2:
+
+            messages.error(
+                request,
+                "At least two active participants are required."
+            )
+
+        else:
+
+            random.shuffle(participants)
+
+            ordered_ids = [
+                participant.id
+                for participant in participants
+            ]
+
+            assign_payout_positions(
+                participants,
+                ordered_ids
+            )
+
+            cycle.status = AjoCycle.Status.SETUP
+
+            cycle.save(update_fields=[
+                "status",
+                "updated_at"
+            ])
+
+            messages.success(
+                request,
+                "A new random payout order has been generated. You can still adjust the positions."
+            )
+
+    return redirect(
+        "groups:manage_rotation",
+        group_id=group.id,
+        cycle_id=cycle.id
+    )
+
+
+@login_required
+@require_POST
+def confirm_rotation(request, group_id, cycle_id):
+
+    with transaction.atomic():
+
+        group = get_object_or_404(
+            AjoGroup.objects.select_for_update(),
+            id=group_id,
+            owner=request.user
+        )
+
+        cycle = get_object_or_404(
+            AjoCycle.objects.select_for_update(),
+            id=cycle_id,
+            group=group
+        )
+
+        if (
+            cycle.rotation_confirmed_at
+            or cycle.status in [
+                AjoCycle.Status.ACTIVE,
+                AjoCycle.Status.PAUSED,
+                AjoCycle.Status.COMPLETED,
+                AjoCycle.Status.CANCELLED,
+            ]
+        ):
+            messages.error(
+                request,
+                "This rotation has already been locked or is no longer editable."
+            )
+
+            return redirect(
+                "groups:cycle_overview",
+                group_id=group.id
+            )
+
+        participants = list(
+            CycleParticipant.objects
+            .select_for_update()
+            .filter(
+                cycle=cycle,
+                status=CycleParticipant.Status.ACTIVE
+            )
+        )
+
+        positions = sorted(
+            participant.payout_position
+            for participant in participants
+            if participant.payout_position is not None
+        )
+
+        expected_positions = list(
+            range(1, len(participants) + 1)
+        )
+
+        if len(participants) < 2:
+
+            messages.error(
+                request,
+                "At least two active participants are required."
+            )
+
+        elif positions != expected_positions:
+
+            messages.error(
+                request,
+                "Every participant must have a unique, consecutive payout position before confirmation."
+            )
+
+        else:
+
+            cycle.rotation_confirmed_at = timezone.now()
+            cycle.rotation_confirmed_by = request.user
+            cycle.status = AjoCycle.Status.READY
+
+            cycle.save(update_fields=[
+                "rotation_confirmed_at",
+                "rotation_confirmed_by",
+                "status",
+                "updated_at"
+            ])
+
+            messages.success(
+                request,
+                "Payout rotation confirmed successfully. The arrangement is now locked."
+            )
+
+    return redirect(
+        "groups:cycle_overview",
+        group_id=group.id
+    )
