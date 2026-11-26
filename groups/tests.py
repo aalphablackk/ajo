@@ -10,8 +10,17 @@ from .models import (
     GroupMembership,
     GroupMembershipHistory,
     AjoCycle,
-    CycleParticipant
+    CycleParticipant,
+    HistoricalImportBatch,
+    HistoricalRecordReview,
+    HistoricalRecordReviewEvent,
+    AjoRound,
+    HistoricalContribution,
 )
+from django.core.exceptions import ValidationError
+from .services import create_historical_import_batch
+from .services import create_historical_rounds
+from .services import create_historical_contribution
 
 
 User = get_user_model()
@@ -1107,3 +1116,603 @@ class RotationManagementTests(GroupTestBase):
             updated_positions,
         )
 
+class HistoricalRecordReviewTests(GroupTestBase):
+
+    def setUp(self):
+        super().setUp()
+
+        # Approve the member.
+        self.member_membership.status = GroupMembership.Status.APPROVED
+        self.member_membership.reviewed_by = self.owner
+        self.member_membership.reviewed_at = timezone.now()
+        self.member_membership.save()
+
+        # Add the member to the cycle.
+        self.member_participant = CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.ACTIVE
+        )
+
+        self.batch = HistoricalImportBatch.objects.create(
+            cycle=self.cycle,
+            created_by=self.owner,
+            total_completed_rounds=2,
+            notes="Imported records from an existing WhatsApp Ajo."
+        )
+
+        self.review = HistoricalRecordReview.objects.create(
+            batch=self.batch,
+            participant=self.member_participant
+        )
+
+    def test_review_is_created_as_pending(self):
+        self.assertEqual(
+            self.review.status,
+            HistoricalRecordReview.Status.PENDING
+        )
+
+    def test_member_can_confirm_historical_records(self):
+        self.review.status = HistoricalRecordReview.Status.CONFIRMED
+        self.review.reviewed_at = timezone.now()
+        self.review.save()
+
+        self.review.refresh_from_db()
+
+        self.assertEqual(
+            self.review.status,
+            HistoricalRecordReview.Status.CONFIRMED
+        )
+
+        self.assertIsNotNone(self.review.reviewed_at)
+
+    def test_member_can_dispute_historical_records(self):
+        self.review.status = HistoricalRecordReview.Status.DISPUTED
+        self.review.dispute_reason = (
+            "My second contribution was not included."
+        )
+        self.review.reviewed_at = timezone.now()
+        self.review.save()
+
+        self.review.refresh_from_db()
+
+        self.assertEqual(
+            self.review.status,
+            HistoricalRecordReview.Status.DISPUTED
+        )
+
+        self.assertIn(
+            "second contribution",
+            self.review.dispute_reason
+        )
+
+    def test_participant_cannot_review_another_cycles_records(self):
+        another_cycle = AjoCycle.objects.create(
+            group=self.group,
+            cycle_number=2,
+            onboarding_type=AjoCycle.OnboardingType.NEW,
+            contribution_amount=self.group.contribution_amount,
+            frequency=self.group.frequency,
+            payout_method=self.group.payout_method,
+            start_date=self.group.start_date,
+            status=AjoCycle.Status.SETUP,
+        )
+
+        another_participant = CycleParticipant.objects.create(
+            cycle=another_cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.ACTIVE
+        )
+
+        invalid_review = HistoricalRecordReview(
+            batch=self.batch,
+            participant=another_participant
+        )
+
+        with self.assertRaises(ValidationError):
+            invalid_review.full_clean()
+
+    def test_only_one_review_per_participant_per_batch(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                HistoricalRecordReview.objects.create(
+                    batch=self.batch,
+                    participant=self.member_participant
+                )
+
+    def test_review_event_preserves_action_history(self):
+        event = HistoricalRecordReviewEvent.objects.create(
+            review=self.review,
+            event_type=(
+                HistoricalRecordReviewEvent.EventType.CONFIRMED
+            ),
+            performed_by=self.owner,
+            notes="Member confirmed the imported records."
+        )
+
+        self.assertEqual(event.review, self.review)
+        self.assertEqual(event.performed_by, self.owner)
+
+        self.assertEqual(
+            event.event_type,
+            HistoricalRecordReviewEvent.EventType.CONFIRMED
+        )
+
+        self.assertEqual(self.review.events.count(), 1)
+
+class HistoricalImportServiceTests(GroupTestBase):
+
+    def setUp(self):
+        super().setUp()
+
+        # Mark this as an existing Ajo arrangement.
+        self.cycle.onboarding_type = AjoCycle.OnboardingType.EXISTING
+        self.cycle.save(update_fields=["onboarding_type"])
+
+        # Approve the second member.
+        self.member_membership.status = GroupMembership.Status.APPROVED
+        self.member_membership.reviewed_by = self.owner
+        self.member_membership.reviewed_at = timezone.now()
+        self.member_membership.save()
+
+        # Add the second member to the cycle.
+        self.member_participant = CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.ACTIVE,
+        )
+
+        self.owner_participant = CycleParticipant.objects.get(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+        )
+
+        self.owner_participant.payout_position = 1
+        self.owner_participant.save(update_fields=["payout_position"])
+
+        self.member_participant.payout_position = 2
+        self.member_participant.save(update_fields=["payout_position"])
+
+    def test_owner_can_create_historical_import(self):
+
+        batch = create_historical_import_batch(
+            cycle_id=self.cycle.id,
+            actor=self.owner,
+            total_completed_rounds=1,
+            notes="Imported from an existing WhatsApp Ajo.",
+        )
+
+        self.assertEqual(batch.cycle, self.cycle)
+        self.assertEqual(batch.created_by, self.owner)
+        self.assertEqual(batch.total_completed_rounds, 1)
+        self.assertEqual(
+            batch.status,
+            HistoricalImportBatch.Status.DRAFT,
+        )
+
+    def test_non_owner_cannot_create_historical_import(self):
+
+        with self.assertRaises(ValidationError):
+            create_historical_import_batch(
+                cycle_id=self.cycle.id,
+                actor=self.member,
+                total_completed_rounds=1,
+            )
+
+    def test_new_ajo_cannot_create_historical_import(self):
+
+        self.cycle.onboarding_type = AjoCycle.OnboardingType.NEW
+        self.cycle.save(update_fields=["onboarding_type"])
+
+        with self.assertRaises(ValidationError):
+            create_historical_import_batch(
+                cycle_id=self.cycle.id,
+                actor=self.owner,
+                total_completed_rounds=1,
+            )
+
+    def test_active_cycle_cannot_create_historical_import(self):
+
+        self.cycle.status = AjoCycle.Status.ACTIVE
+        self.cycle.save(update_fields=["status"])
+
+        with self.assertRaises(ValidationError):
+            create_historical_import_batch(
+                cycle_id=self.cycle.id,
+                actor=self.owner,
+                total_completed_rounds=1,
+            )
+
+    def test_completed_rounds_cannot_equal_participant_count(self):
+
+        with self.assertRaises(ValidationError):
+            create_historical_import_batch(
+                cycle_id=self.cycle.id,
+                actor=self.owner,
+                total_completed_rounds=2,
+            )
+
+    def test_completed_rounds_cannot_be_negative(self):
+
+        with self.assertRaises(ValidationError):
+            create_historical_import_batch(
+                cycle_id=self.cycle.id,
+                actor=self.owner,
+                total_completed_rounds=-1,
+            )
+
+    def test_duplicate_historical_import_is_prevented(self):
+
+        create_historical_import_batch(
+            cycle_id=self.cycle.id,
+            actor=self.owner,
+            total_completed_rounds=1,
+        )
+
+        with self.assertRaises(ValidationError):
+            create_historical_import_batch(
+                cycle_id=self.cycle.id,
+                actor=self.owner,
+                total_completed_rounds=1,
+            )
+
+class HistoricalRoundServiceTests(GroupTestBase):
+
+    def setUp(self):
+        super().setUp()
+
+        self.cycle.onboarding_type = AjoCycle.OnboardingType.EXISTING
+        self.cycle.save(update_fields=["onboarding_type"])
+
+        # Approve the second member.
+        self.member_membership.status = GroupMembership.Status.APPROVED
+        self.member_membership.reviewed_by = self.owner
+        self.member_membership.reviewed_at = timezone.now()
+        self.member_membership.save()
+
+        # Create the second participant.
+        self.member_participant = CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.ACTIVE,
+            payout_position=2,
+        )
+
+        # Assign the first position to the owner.
+        self.owner_participant = CycleParticipant.objects.get(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+        )
+        self.owner_participant.payout_position = 1
+        self.owner_participant.save(update_fields=["payout_position"])
+
+        self.batch = HistoricalImportBatch.objects.create(
+            cycle=self.cycle,
+            created_by=self.owner,
+            total_completed_rounds=1,
+        )
+
+    def test_owner_can_create_historical_rounds(self):
+
+        rounds = create_historical_rounds(
+            batch_id=self.batch.id,
+            actor=self.owner,
+        )
+
+        self.assertEqual(len(rounds), 1)
+
+        self.assertEqual(rounds[0].round_number, 1)
+        self.assertEqual(
+            rounds[0].participant,
+            self.owner_participant,
+        )
+        self.assertEqual(
+            rounds[0].record_source,
+            AjoRound.RecordSource.HISTORICAL,
+        )
+        self.assertEqual(
+            rounds[0].status,
+            AjoRound.Status.COMPLETED,
+        )
+
+    def test_historical_rounds_preserve_original_order(self):
+
+        # Add a third participant so two completed rounds are possible.
+        third_membership = GroupMembership.objects.create(
+            group=self.group,
+            user=self.other_user,
+            role=GroupMembership.Role.MEMBER,
+            status=GroupMembership.Status.APPROVED,
+            reviewed_by=self.owner,
+            reviewed_at=timezone.now(),
+        )
+
+        third_participant = CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=third_membership,
+            status=CycleParticipant.Status.ACTIVE,
+            payout_position=3,
+        )
+
+        self.batch.total_completed_rounds = 2
+        self.batch.save(update_fields=["total_completed_rounds"])
+
+        rounds = create_historical_rounds(
+            batch_id=self.batch.id,
+            actor=self.owner,
+        )
+
+        self.assertEqual(len(rounds), 2)
+
+        self.assertEqual(
+            [item.round_number for item in rounds],
+            [1, 2],
+        )
+
+        self.assertEqual(
+            rounds[0].participant,
+            self.owner_participant,
+        )
+
+        self.assertEqual(
+            rounds[1].participant,
+            self.member_participant,
+        )
+
+        self.assertNotEqual(
+            rounds[1].participant,
+            third_participant,
+        )
+
+    def test_non_owner_cannot_create_historical_rounds(self):
+
+        with self.assertRaises(ValidationError):
+            create_historical_rounds(
+                batch_id=self.batch.id,
+                actor=self.member,
+            )
+
+    def test_incomplete_payout_order_is_rejected(self):
+
+        self.member_participant.payout_position = None
+        self.member_participant.save(update_fields=["payout_position"])
+
+        with self.assertRaises(ValidationError):
+            create_historical_rounds(
+                batch_id=self.batch.id,
+                actor=self.owner,
+            )
+
+        self.assertEqual(
+            AjoRound.objects.filter(cycle=self.cycle).count(),
+            0,
+        )
+
+    def test_existing_rounds_prevent_duplicate_creation(self):
+
+        AjoRound.objects.create(
+            cycle=self.cycle,
+            round_number=1,
+            participant=self.owner_participant,
+            record_source=AjoRound.RecordSource.HISTORICAL,
+            status=AjoRound.Status.COMPLETED,
+        )
+
+        with self.assertRaises(ValidationError):
+            create_historical_rounds(
+                batch_id=self.batch.id,
+                actor=self.owner,
+            )
+
+    def test_non_draft_batch_cannot_create_rounds(self):
+
+        self.batch.status = HistoricalImportBatch.Status.REVIEW
+        self.batch.save(update_fields=["status"])
+
+        with self.assertRaises(ValidationError):
+            create_historical_rounds(
+                batch_id=self.batch.id,
+                actor=self.owner,
+            )
+
+    def test_zero_completed_rounds_creates_no_historical_rounds(self):
+
+        self.batch.total_completed_rounds = 0
+        self.batch.save(update_fields=["total_completed_rounds"])
+
+        rounds = create_historical_rounds(
+            batch_id=self.batch.id,
+            actor=self.owner,
+        )
+
+        self.assertEqual(rounds, [])
+
+        self.assertEqual(
+            AjoRound.objects.filter(cycle=self.cycle).count(),
+            0,
+        )
+
+
+class HistoricalContributionServiceTests(GroupTestBase):
+
+    def setUp(self):
+        super().setUp()
+
+        # Convert the cycle into an existing Ajo arrangement.
+        self.cycle.onboarding_type = AjoCycle.OnboardingType.EXISTING
+        self.cycle.save(update_fields=["onboarding_type"])
+
+        # Approve the second member.
+        self.member_membership.status = GroupMembership.Status.APPROVED
+        self.member_membership.reviewed_by = self.owner
+        self.member_membership.reviewed_at = timezone.now()
+        self.member_membership.save()
+
+        # Create the second cycle participant.
+        self.member_participant = CycleParticipant.objects.create(
+            cycle=self.cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.ACTIVE,
+            payout_position=2,
+        )
+
+        # Give the owner the first payout position.
+        self.owner_participant = CycleParticipant.objects.get(
+            cycle=self.cycle,
+            membership=self.owner_membership,
+        )
+        self.owner_participant.payout_position = 1
+        self.owner_participant.save(update_fields=["payout_position"])
+
+        # Create a historical import batch.
+        self.batch = HistoricalImportBatch.objects.create(
+            cycle=self.cycle,
+            created_by=self.owner,
+            total_completed_rounds=1,
+        )
+
+        # Create one completed historical round.
+        self.historical_round = AjoRound.objects.create(
+            cycle=self.cycle,
+            round_number=1,
+            participant=self.owner_participant,
+            record_source=AjoRound.RecordSource.HISTORICAL,
+            status=AjoRound.Status.COMPLETED,
+        )
+
+        self.contribution_data = {
+            "batch_id": self.batch.id,
+            "round_id": self.historical_round.id,
+            "participant_id": self.member_participant.id,
+            "actor": self.owner,
+            "amount": Decimal("5000.00"),
+            "contribution_date": timezone.now().date(),
+            "reference": "BANK-TRANSFER-001",
+            "notes": "First contribution.",
+        }
+
+    def test_owner_can_record_historical_contribution(self):
+        contribution = create_historical_contribution(
+            **self.contribution_data
+        )
+
+        self.assertEqual(
+            contribution.amount,
+            Decimal("5000.00"),
+        )
+
+        self.assertEqual(
+            contribution.participant,
+            self.member_participant,
+        )
+
+        self.assertEqual(
+            contribution.ajo_round,
+            self.historical_round,
+        )
+
+        self.assertEqual(contribution.batch, self.batch)
+        self.assertEqual(
+            contribution.reference,
+            "BANK-TRANSFER-001",
+        )
+
+    def test_multiple_partial_contributions_are_allowed(self):
+        first_payment = create_historical_contribution(
+            **self.contribution_data
+        )
+
+        second_data = self.contribution_data.copy()
+        second_data["amount"] = Decimal("3000.00")
+        second_data["reference"] = "BANK-TRANSFER-002"
+        second_data["notes"] = "Second contribution."
+
+        second_payment = create_historical_contribution(
+            **second_data
+        )
+
+        self.assertNotEqual(
+            first_payment.id,
+            second_payment.id,
+        )
+
+        self.assertEqual(
+            HistoricalContribution.objects.filter(
+                batch=self.batch,
+                ajo_round=self.historical_round,
+                participant=self.member_participant,
+            ).count(),
+            2,
+        )
+
+        total_paid = sum(
+            HistoricalContribution.objects.filter(
+                batch=self.batch,
+                ajo_round=self.historical_round,
+                participant=self.member_participant,
+            ).values_list("amount", flat=True)
+        )
+
+        self.assertEqual(total_paid, Decimal("8000.00"))
+
+    def test_non_owner_cannot_record_contribution(self):
+        data = self.contribution_data.copy()
+        data["actor"] = self.member
+
+        with self.assertRaises(ValidationError):
+            create_historical_contribution(**data)
+
+        self.assertEqual(
+            HistoricalContribution.objects.count(),
+            0,
+        )
+
+    def test_participant_from_another_cycle_is_rejected(self):
+        another_cycle = AjoCycle.objects.create(
+            group=self.group,
+            cycle_number=2,
+            onboarding_type=AjoCycle.OnboardingType.NEW,
+            contribution_amount=self.group.contribution_amount,
+            frequency=self.group.frequency,
+            payout_method=self.group.payout_method,
+            start_date=self.group.start_date,
+            status=AjoCycle.Status.SETUP,
+        )
+
+        another_participant = CycleParticipant.objects.create(
+            cycle=another_cycle,
+            membership=self.member_membership,
+            status=CycleParticipant.Status.ACTIVE,
+        )
+
+        data = self.contribution_data.copy()
+        data["participant_id"] = another_participant.id
+
+        with self.assertRaises(ValidationError):
+            create_historical_contribution(**data)
+
+    def test_platform_round_cannot_receive_historical_contribution(self):
+        self.historical_round.record_source = AjoRound.RecordSource.PLATFORM
+        self.historical_round.save(update_fields=["record_source"])
+
+        with self.assertRaises(ValidationError):
+            create_historical_contribution(**self.contribution_data)
+
+    def test_non_draft_batch_cannot_receive_contributions(self):
+        self.batch.status = HistoricalImportBatch.Status.REVIEW
+        self.batch.save(update_fields=["status"])
+
+        with self.assertRaises(ValidationError):
+            create_historical_contribution(**self.contribution_data)
+
+    def test_zero_amount_is_rejected(self):
+        data = self.contribution_data.copy()
+        data["amount"] = Decimal("0.00")
+
+        with self.assertRaises(ValidationError):
+            create_historical_contribution(**data)
+
+        self.assertEqual(
+            HistoricalContribution.objects.count(),
+            0,
+        )

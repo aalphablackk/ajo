@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/6.1/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
-
+import sys
 from pathlib import Path
 from decouple import config, Csv
 
@@ -144,6 +144,11 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# Use a fast password hasher during automated tests only.
+if "test" in sys.argv:
+    PASSWORD_HASHERS = [
+        "django.contrib.auth.hashers.MD5PasswordHasher",
+    ]
 
 # Internationalization
 # https://docs.djangoproject.com/en/6.1/topics/i18n/

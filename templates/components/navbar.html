@@ -1,0 +1,63 @@
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+
+    <div class="container">
+
+        <a class="navbar-brand fw-bold"
+           href="{% url 'groups:my_groups' %}">
+            Digital Ajo
+        </a>
+
+        <button
+            class="navbar-toggler"
+            type="button"
+            data-bs-toggle="collapse"
+            data-bs-target="#mainNavbar">
+
+            <span class="navbar-toggler-icon"></span>
+
+        </button>
+
+        <div class="collapse navbar-collapse" id="mainNavbar">
+
+            {% if request.user.is_authenticated %}
+
+                <ul class="navbar-nav ms-auto">
+
+                    <li class="nav-item">
+                        <a class="nav-link"
+                           href="{% url 'groups:my_groups' %}">
+                            My Groups
+                        </a>
+                    </li>
+
+                    <li class="nav-item">
+                        <a class="nav-link"
+                           href="{% url 'accounts:dashboard' %}">
+                            Dashboard
+                        </a>
+                    </li>
+
+                    <li class="nav-item">
+
+                        <form method="POST"
+                              action="{% url 'accounts:logout' %}">
+
+                            {% csrf_token %}
+
+                            <button class="btn btn-outline-light btn-sm mt-1">
+                                Logout
+                            </button>
+
+                        </form>
+
+                    </li>
+
+                </ul>
+
+            {% endif %}
+
+        </div>
+
+    </div>
+
+</nav>

@@ -5,7 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.urls import reverse
 from django.views.decorators.http import require_POST
-from .forms import AjoGroupForm, AjoCycleForm
+from .forms import AjoGroupForm, AjoCycleForm, AjoGroupCreationForm
 from .models import AjoGroup, GroupMembership, GroupMembershipHistory,AjoCycle,CycleParticipant
 from django.db.models import Count, Q
 import random
@@ -15,9 +15,10 @@ import random
 def create_group(request):
 
     if request.method == "POST":
-        form = AjoGroupForm(request.POST)
+        form = AjoGroupCreationForm(request.POST)
 
         if form.is_valid():
+
             with transaction.atomic():
 
                 # Create the group.
@@ -35,11 +36,11 @@ def create_group(request):
                     reviewed_at=timezone.now(),
                 )
 
-                # Automatically create the first Ajo cycle.
+                # Create the first cycle using the selected onboarding type.
                 cycle = AjoCycle.objects.create(
                     group=group,
                     cycle_number=1,
-                    onboarding_type=AjoCycle.OnboardingType.NEW,
+                    onboarding_type=form.cleaned_data["onboarding_type"],
                     contribution_amount=group.contribution_amount,
                     frequency=group.frequency,
                     payout_method=group.payout_method,
@@ -54,15 +55,21 @@ def create_group(request):
                     status=CycleParticipant.Status.ACTIVE,
                 )
 
-            messages.success(
-                request,
-                "Your Ajo group and first cycle have been created successfully."
-            )
+            if cycle.onboarding_type == AjoCycle.OnboardingType.EXISTING:
+                messages.success(
+                    request,
+                    "Your existing Ajo group has been created. Next, we'll set up its existing arrangement."
+                )
+            else:
+                messages.success(
+                    request,
+                    "Your new Ajo group and first cycle have been created successfully."
+                )
 
             return redirect("groups:my_groups")
 
     else:
-        form = AjoGroupForm()
+        form = AjoGroupCreationForm()
 
     return render(
         request,

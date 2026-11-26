@@ -1,0 +1,32 @@
+<div class="mb-4">
+
+    <div class="d-flex justify-content-between align-items-start">
+
+        <div>
+
+            <h2 class="mb-1">
+                {{ title }}
+            </h2>
+
+            {% if description %}
+                <p class="text-muted mb-0">
+                    {{ description }}
+                </p>
+            {% endif %}
+
+        </div>
+
+        {% if action_url and action_label %}
+
+            <a href="{{ action_url }}"
+               class="btn btn-primary">
+
+                {{ action_label }}
+
+            </a>
+
+        {% endif %}
+
+    </div>
+
+</div>

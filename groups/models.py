@@ -340,3 +340,342 @@ class CycleParticipant(models.Model):
 
     def __str__(self):
         return f"{self.membership.user} - {self.cycle}"
+
+class HistoricalImportBatch(models.Model):
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        REVIEW = "review", "Awaiting member review"
+        DISPUTED = "disputed", "Has disputed records"
+        READY = "ready", "Ready for activation"
+        COMPLETED = "completed", "Completed"
+
+    cycle = models.OneToOneField(
+        AjoCycle,
+        on_delete=models.CASCADE,
+        related_name="historical_import"
+    )
+
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.DRAFT
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_historical_imports"
+    )
+
+    total_completed_rounds = models.PositiveIntegerField(default=0)
+
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Historical import - {self.cycle}"
+
+
+class AjoRound(models.Model):
+
+    class Status(models.TextChoices):
+        UPCOMING = "upcoming", "Upcoming"
+        ACTIVE = "active", "Active"
+        COMPLETED = "completed", "Completed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    class RecordSource(models.TextChoices):
+        HISTORICAL = "historical", "Imported historical record"
+        PLATFORM = "platform", "Managed by Digital Ajo"
+
+    cycle = models.ForeignKey(
+        AjoCycle,
+        on_delete=models.CASCADE,
+        related_name="rounds"
+    )
+
+    round_number = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)]
+    )
+
+    participant = models.ForeignKey(
+        CycleParticipant,
+        on_delete=models.PROTECT,
+        related_name="payout_rounds"
+    )
+
+    record_source = models.CharField(
+        max_length=12,
+        choices=RecordSource.choices,
+        default=RecordSource.PLATFORM
+    )
+
+    scheduled_date = models.DateField(
+        blank=True,
+        null=True
+    )
+
+    payout_date = models.DateField(
+        blank=True,
+        null=True
+    )
+
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.UPCOMING
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["round_number"]
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cycle", "round_number"],
+                name="unique_round_number_per_cycle"
+            )
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.participant_id and self.cycle_id:
+            if self.participant.cycle_id != self.cycle_id:
+                raise ValidationError({
+                    "participant": "The selected participant must belong to this cycle."
+                })
+
+    def __str__(self):
+        return f"{self.cycle} - Round {self.round_number}"
+
+class HistoricalContribution(models.Model):
+
+    batch = models.ForeignKey(
+        HistoricalImportBatch,
+        on_delete=models.CASCADE,
+        related_name="contributions"
+    )
+
+    ajo_round = models.ForeignKey(
+        AjoRound,
+        on_delete=models.PROTECT,
+        related_name="historical_contributions"
+    )
+
+    participant = models.ForeignKey(
+        CycleParticipant,
+        on_delete=models.PROTECT,
+        related_name="historical_contributions"
+    )
+
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(0.01)]
+    )
+
+    contribution_date = models.DateField()
+
+    reference = models.CharField(
+        max_length=150,
+        blank=True
+    )
+
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["contribution_date"]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.batch_id and self.ajo_round_id:
+            if self.batch.cycle_id != self.ajo_round.cycle_id:
+                raise ValidationError(
+                    "The round must belong to the import batch's cycle."
+                )
+
+        if self.participant_id and self.ajo_round_id:
+            if self.participant.cycle_id != self.ajo_round.cycle_id:
+                raise ValidationError(
+                    "The contributor must belong to the round's cycle."
+                )
+
+        if self.ajo_round_id:
+            if self.ajo_round.record_source != AjoRound.RecordSource.HISTORICAL:
+                raise ValidationError(
+                    "Historical contributions must belong to historical rounds."
+                )
+
+    def __str__(self):
+        return f"{self.participant} - ₦{self.amount}"
+
+class HistoricalPayout(models.Model):
+
+    batch = models.ForeignKey(
+        HistoricalImportBatch,
+        on_delete=models.CASCADE,
+        related_name="payouts"
+    )
+
+    ajo_round = models.ForeignKey(
+        AjoRound,
+        on_delete=models.PROTECT,
+        related_name="historical_payouts"
+    )
+
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(0.01)]
+    )
+
+    payout_date = models.DateField()
+
+    reference = models.CharField(
+        max_length=150,
+        blank=True
+    )
+
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["payout_date"]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.batch_id and self.ajo_round_id:
+            if self.batch.cycle_id != self.ajo_round.cycle_id:
+                raise ValidationError(
+                    "The round must belong to the import batch's cycle."
+                )
+
+        if self.ajo_round_id:
+            if self.ajo_round.record_source != AjoRound.RecordSource.HISTORICAL:
+                raise ValidationError(
+                    "Historical payouts must belong to historical rounds."
+                )
+
+    def __str__(self):
+        return f"{self.ajo_round} - ₦{self.amount}"
+
+class HistoricalRecordReview(models.Model):
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Awaiting review"
+        CONFIRMED = "confirmed", "Confirmed"
+        DISPUTED = "disputed", "Disputed"
+
+    batch = models.ForeignKey(
+        HistoricalImportBatch,
+        on_delete=models.CASCADE,
+        related_name="member_reviews"
+    )
+
+    participant = models.ForeignKey(
+        CycleParticipant,
+        on_delete=models.PROTECT,
+        related_name="historical_reviews"
+    )
+
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.PENDING
+    )
+
+    dispute_reason = models.TextField(blank=True)
+
+    resolution_note = models.TextField(blank=True)
+
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="resolved_historical_reviews"
+    )
+
+    resolved_at = models.DateTimeField(
+        blank=True,
+        null=True
+    )
+
+    reviewed_at = models.DateTimeField(
+        blank=True,
+        null=True
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["batch", "participant"],
+                name="unique_historical_review_per_member"
+            )
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.batch_id and self.participant_id:
+            if self.batch.cycle_id != self.participant.cycle_id:
+                raise ValidationError(
+                    "The participant must belong to the import batch's cycle."
+                )
+
+    def __str__(self):
+        return f"{self.participant} - {self.get_status_display()}"
+
+class HistoricalRecordReviewEvent(models.Model):
+
+    class EventType(models.TextChoices):
+        CONFIRMED = "confirmed", "Records confirmed"
+        DISPUTED = "disputed", "Records disputed"
+        RESOLVED = "resolved", "Dispute resolved"
+        REVIEW_REQUESTED = "review_requested", "Review requested again"
+
+    review = models.ForeignKey(
+        HistoricalRecordReview,
+        on_delete=models.PROTECT,
+        related_name="events"
+    )
+
+    event_type = models.CharField(
+        max_length=20,
+        choices=EventType.choices
+    )
+
+    performed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="historical_review_events"
+    )
+
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.review} - {self.get_event_type_display()}"

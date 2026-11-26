@@ -47,6 +47,21 @@ class AjoGroupForm(forms.ModelForm):
             }),
         }
 
+class AjoGroupCreationForm(AjoGroupForm):
+
+    onboarding_type = forms.ChoiceField(
+        choices=AjoCycle.OnboardingType.choices,
+        initial=AjoCycle.OnboardingType.NEW,
+        label="How would you like to start?",
+        help_text="Choose whether this is a new Ajo or an arrangement already running elsewhere.",
+        widget=forms.Select(attrs={
+            "class": "form-select",
+        })
+    )
+
+    class Meta(AjoGroupForm.Meta):
+        pass
+
 class AjoCycleForm(forms.ModelForm):
 
     participants = forms.ModelMultipleChoiceField(

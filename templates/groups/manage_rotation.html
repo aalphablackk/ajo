@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Rotation | Digital Ajo{% endblock %}
+
+{% block content %}
+
+    <!-- Page Header -->
+    {% include "components/page_header.html" with title="Manage Payout Rotation" description="Arrange the order in which members will receive their Ajo payouts." %}
+
+    <!-- Back Navigation -->
+    <div class="mb-4">
+        <a href="{% url 'groups:cycle_overview' group.id %}"
+           class="text-decoration-none">
+            &larr; Back to Cycles
+        </a>
+    </div>
+
+
+    <!-- Cycle Information -->
+    <div class="card border-0 shadow-sm mb-4">
+
+        <div class="card-body">
+
+            <h5>{{ group.name }} — Cycle {{ cycle.cycle_number }}</h5>
+
+            <div class="row mt-3">
+
+                <div class="col-md-4 mb-3">
+                    <small class="text-muted">Contribution</small>
+                    <p class="fw-semibold mb-0">
+                        ₦{{ cycle.contribution_amount|floatformat:2 }}
+                    </p>
+                </div>
+
+                <div class="col-md-4 mb-3">
+                    <small class="text-muted">Frequency</small>
+                    <p class="fw-semibold mb-0">
+                        {{ cycle.get_frequency_display }}
+                    </p>
+                </div>
+
+                <div class="col-md-4 mb-3">
+                    <small class="text-muted">Payout Method</small>
+                    <p class="fw-semibold mb-0">
+                        {{ cycle.get_payout_method_display }}
+                    </p>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- Rotation Instructions -->
+    <div class="alert alert-info">
+
+        <strong>How payout rotation works</strong>
+
+        <p class="mb-0 mt-1">
+            Arrange members in the order they should receive their payouts.
+            Position 1 receives the first payout, position 2 receives the
+            second, and so on.
+        </p>
+
+    </div>
+
+
+    <!-- Participant Arrangement -->
+    <div class="card border-0 shadow-sm mb-4">
+
+        <div class="card-body">
+
+            <div class="d-flex justify-content-between align-items-center mb-3">
+
+                <div>
+                    <h5 class="mb-1">Payout Order</h5>
+
+                    <small class="text-muted">
+                        {{ participants|length }} active participants
+                    </small>
+                </div>
+
+            </div>
+
+
+            {% if participants|length >= 2 %}
+
+                <form method="POST"
+                      action="{% url 'groups:manage_rotation' group.id cycle.id %}"
+                      id="rotationForm">
+
+                    {% csrf_token %}
+
+                    <div id="participantList" class="list-group mb-4">
+
+                        {% for participant in participants %}
+
+                            <div class="list-group-item d-flex align-items-center justify-content-between"
+                                 data-participant-id="{{ participant.id }}">
+
+                                <div class="d-flex align-items-center gap-3">
+
+                                    <span class="badge bg-primary position-number">
+                                        {{ forloop.counter }}
+                                    </span>
+
+                                    <div>
+                                        <div class="fw-semibold">
+                                            {{ participant.membership.user.full_name }}
+                                        </div>
+
+                                        <small class="text-muted">
+                                            {{ participant.membership.user.email }}
+                                        </small>
+                                    </div>
+
+                                </div>
+
+
+                                <div class="d-flex gap-2">
+
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-secondary move-up"
+                                            aria-label="Move participant up"
+                                            {% if forloop.first %}disabled{% endif %}>
+                                        ↑
+                                    </button>
+
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-secondary move-down"
+                                            aria-label="Move participant down"
+                                            {% if forloop.last %}disabled{% endif %}>
+                                        ↓
+                                    </button>
+
+                                </div>
+
+                            </div>
+
+                        {% endfor %}
+
+                    </div>
+
+
+                    <!-- Submitted Participant Order -->
+                    <div id="participantInputs"></div>
+
+
+                    <button type="submit"
+                            class="btn btn-primary"
+                            id="saveRotationButton">
+                        Save Payout Order
+                    </button>
+
+                </form>
+
+            {% else %}
+
+                {% include "components/empty_state.html" with title="Not enough participants" description="At least two active participants are required to create a payout rotation." %}
+
+            {% endif %}
+
+        </div>
+
+    </div>
+
+
+    <!-- Random Rotation -->
+    {% if cycle.payout_method == "random" and participants|length >= 2 %}
+
+        <div class="card border-0 shadow-sm mb-4">
+
+            <div class="card-body">
+
+                <h5>Randomize Payout Order</h5>
+
+                <p class="text-muted">
+                    Generate a new random arrangement. You can still
+                    manually adjust the resulting order before confirming.
+                </p>
+
+                <form method="POST"
+                      action="{% url 'groups:generate_random_rotation' group.id cycle.id %}">
+
+                    {% csrf_token %}
+
+                    <button type="submit" class="btn btn-outline-dark">
+                        Generate New Random Order
+                    </button>
+
+                </form>
+
+            </div>
+
+        </div>
+
+    {% endif %}
+
+
+    <!-- Confirm Rotation -->
+    <div class="card border-0 shadow-sm mb-4">
+
+        <div class="card-body">
+
+            <h5>Confirm Payout Rotation</h5>
+
+            <p class="text-muted">
+                Review the arrangement carefully before confirming.
+                Once confirmed, the payout order will be locked.
+            </p>
+
+            <div class="alert alert-warning">
+                <strong>Important:</strong>
+                You cannot change the confirmed payout order through
+                the normal rotation management process.
+            </div>
+
+            <form method="POST"
+                  action="{% url 'groups:confirm_rotation' group.id cycle.id %}"
+                  onsubmit="return confirm('Are you sure you want to confirm and lock this payout rotation?');">
+
+                {% csrf_token %}
+
+                <button type="submit"
+                        class="btn btn-success"
+                        {% if participants|length < 2 %}disabled{% endif %}>
+                    Confirm Payout Rotation
+                </button>
+
+            </form>
+
+        </div>
+
+    </div>
+
+{% endblock %}
+
+
+{% block extra_js %}
+
+<script>
+
+    const participantList = document.getElementById("participantList");
+    const participantInputs = document.getElementById("participantInputs");
+
+    if (participantList && participantInputs) {
+
+        function updateParticipantOrder() {
+
+            const participants = participantList.querySelectorAll(
+                "[data-participant-id]"
+            );
+
+            participantInputs.innerHTML = "";
+
+            participants.forEach((participant, index) => {
+
+                // Update displayed position.
+                participant.querySelector(".position-number").textContent =
+                    index + 1;
+
+                // Create hidden input for Django POST.
+                const input = document.createElement("input");
+
+                input.type = "hidden";
+                input.name = "participant_order";
+                input.value = participant.dataset.participantId;
+
+                participantInputs.appendChild(input);
+
+                // Update movement buttons.
+                const moveUp = participant.querySelector(".move-up");
+                const moveDown = participant.querySelector(".move-down");
+
+                moveUp.disabled = index === 0;
+                moveDown.disabled = index === participants.length - 1;
+
+            });
+
+        }
+
+
+        participantList.addEventListener("click", function(event) {
+
+            const button = event.target.closest("button");
+
+            if (!button) return;
+
+            const participant = button.closest(
+                "[data-participant-id]"
+            );
+
+            if (!participant) return;
+
+            if (button.classList.contains("move-up")) {
+
+                const previous = participant.previousElementSibling;
+
+                if (previous) {
+                    participantList.insertBefore(participant, previous);
+                }
+
+            }
+
+            else if (button.classList.contains("move-down")) {
+
+                const next = participant.nextElementSibling;
+
+                if (next) {
+                    participantList.insertBefore(next, participant);
+                }
+
+            }
+
+            updateParticipantOrder();
+
+        });
+
+
+        // Initialize submitted order.
+        updateParticipantOrder();
+
+    }
+
+</script>
+
+{% endblock %}

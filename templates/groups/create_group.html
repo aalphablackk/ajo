@@ -1,59 +1,78 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Create Ajo Group | Digital Ajo</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="bg-light">
+{% extends "base.html" %}
 
-<div class="container py-5">
-    <div class="row justify-content-center">
-        <div class="col-lg-7">
+{% block title %}Create Ajo Group | Digital Ajo{% endblock %}
 
-            <div class="card shadow-sm border-0">
-                <div class="card-body p-4">
+{% block content %}
 
-                    <h2 class="mb-2">Create an Ajo Group</h2>
-                    <p class="text-muted mb-4">
-                        Set up your savings group and its contribution terms.
-                    </p>
+<div class="row justify-content-center">
+    <div class="col-lg-8">
 
-                    <form method="POST">
-                        {% csrf_token %}
+        {% include "components/page_header.html" with title="Create an Ajo Group" description="Set up your savings group and choose how you want to get started." %}
 
-                        {% if form.non_field_errors %}
-                            <div class="alert alert-danger">
-                                {{ form.non_field_errors }}
-                            </div>
-                        {% endif %}
+        <div class="card shadow-sm border-0">
+            <div class="card-body p-4 p-md-5">
 
-                        {% for field in form %}
-                            <div class="mb-3">
-                                <label class="form-label" for="{{ field.id_for_label }}">
-                                    {{ field.label }}
-                                </label>
+                <form method="POST">
+                    {% csrf_token %}
 
-                                {{ field }}
+                    {% if form.non_field_errors %}
+                        <div class="alert alert-danger">
+                            {{ form.non_field_errors }}
+                        </div>
+                    {% endif %}
 
-                                {% for error in field.errors %}
-                                    <div class="text-danger small">{{ error }}</div>
-                                {% endfor %}
-                            </div>
-                        {% endfor %}
+                    <h5 class="mb-3">Getting Started</h5>
 
-                        <button type="submit" class="btn btn-success w-100">
-                            Create Group
+                    <div class="alert alert-info">
+                        <strong>Already running an Ajo?</strong>
+                        <p class="mb-0 small">
+                            You can bring an existing savings arrangement to Digital Ajo
+                            without restarting its rotation or losing its previous records.
+                        </p>
+                    </div>
+
+                    {% for field in form %}
+                        <div class="mb-4">
+
+                            <label class="form-label fw-semibold"
+                                   for="{{ field.id_for_label }}">
+                                {{ field.label }}
+                            </label>
+
+                            {{ field }}
+
+                            {% if field.help_text %}
+                                <div class="form-text">
+                                    {{ field.help_text }}
+                                </div>
+                            {% endif %}
+
+                            {% for error in field.errors %}
+                                <div class="text-danger small mt-1">
+                                    {{ error }}
+                                </div>
+                            {% endfor %}
+
+                        </div>
+                    {% endfor %}
+
+                    <div class="d-grid gap-2 mt-4">
+                        <button type="submit" class="btn btn-success btn-lg">
+                            Continue
                         </button>
-                    </form>
 
-                </div>
+                        <a href="{% url 'groups:my_groups' %}"
+                           class="btn btn-outline-secondary">
+                            Cancel
+                        </a>
+                    </div>
+
+                </form>
+
             </div>
-
         </div>
+
     </div>
 </div>
 
-</body>
-</html>
+{% endblock %}

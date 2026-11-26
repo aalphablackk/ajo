@@ -1,0 +1,24 @@
+<div class="card border-0 shadow-sm">
+
+    <div class="card-body text-center py-5">
+
+        <h5>{{ title|default:"Nothing here yet" }}</h5>
+
+        <p class="text-muted mb-0">
+            {{ description|default:"There is currently no information to display." }}
+        </p>
+
+        {% if action_url and action_label %}
+
+            <a href="{{ action_url }}"
+               class="btn btn-primary mt-3">
+
+                {{ action_label }}
+
+            </a>
+
+        {% endif %}
+
+    </div>
+
+</div>
